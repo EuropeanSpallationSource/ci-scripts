@@ -37,6 +37,7 @@ skip_commits:
     - '**/*.html'
     - '**/*.md'
     - '.travis.yml'
+    - '.github/workflows/*'
 
 #---------------------------------#
 #       additional packages       #
@@ -80,6 +81,7 @@ environment:
     APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2019
   - CMP: vs2019
     BASE: 3.15
+    CLEAN_DEPS: NO
     APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2019
   - CMP: vs2019
     BASE: 3.14

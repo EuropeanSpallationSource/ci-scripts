@@ -30,9 +30,11 @@ addons:
     - g++-mingw-w64-i686
     - g++-mingw-w64-x86-64
     - qemu-system-x86
+    - p7zip-full
   homebrew:
     packages:
     - re2c
+    - p7zip
     update: true
 
 install:
@@ -98,7 +100,7 @@ jobs:
   - env: SET=test01 BCFG=static-debug
     dist: bionic
 
-  - env: SET=test01
+  - env: SET=test01 CLEAN_DEPS=NO
     dist: trusty
 
   - env: SET=test01 BCFG=static-debug
@@ -142,14 +144,10 @@ jobs:
   - env: SET=test01 WINE=64 TEST=NO BCFG=static-debug
 
   - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO
-  - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO BCFG=static
   - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO BCFG=debug
-  - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO BCFG=static-debug
 
   - env: SET=test01 RTEMS=4.10
-  - env: SET=test01 RTEMS=4.10 BCFG=static
   - env: SET=test01 RTEMS=4.10 BCFG=debug
-  - env: SET=test01 RTEMS=4.10 BCFG=static-debug
 
   - env: SET=test01
     os: windows

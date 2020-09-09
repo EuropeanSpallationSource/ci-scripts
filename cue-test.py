@@ -31,6 +31,13 @@ if 'APPVEYOR' in os.environ:
     elif re.match(r'^macOS', os.environ['APPVEYOR_BUILD_WORKER_IMAGE']):
         ci_os = 'osx'
 
+if 'GITHUB_ACTIONS' in os.environ:
+    ci_service = 'github-actions'
+    if os.environ['RUNNER_OS'] == 'macOS':
+        ci_os = 'osx'
+    else:
+        ci_os = os.environ['RUNNER_OS'].lower()
+
 
 def find_in_file(regex, filename):
     file = open(filename, "r")
@@ -324,8 +331,14 @@ class TestDefaultModuleURLs(unittest.TestCase):
 @unittest.skipIf(ci_os != 'windows', 'VCVars test only applies to windows')
 class TestVCVars(unittest.TestCase):
     def test_vcvars(self):
-        if ci_service == 'appveyor':
+        if ci_service == 'travis':
+            os.environ['TRAVIS_COMPILER'] = 'vs2017'
+        else:
             os.environ['CONFIGURATION'] = 'default'
+            if ci_service == 'github-actions' and os.environ['IMAGEOS'] == 'win16':
+                os.environ['CMP'] = 'vs2017'
+            else:
+                os.environ['CMP'] = 'vs2019'
         cue.detect_context()
         cue.with_vcvars('env')
 
@@ -676,7 +689,10 @@ class TestSetupForBuild(unittest.TestCase):
     args = Namespace(paths=[])
     cue.building_base = True
     if ci_os == 'windows':
-        sp.check_call(['choco', 'install', 'make'])
+        choco_installs = ['make']
+        if ci_service != 'appveyor':
+            choco_installs.append('strawberryperl')
+        sp.check_call(['choco', 'install', '-ry'] + choco_installs)
 
     def setUp(self):
         if ci_service == 'appveyor':
@@ -726,10 +742,10 @@ class TestSetupForBuild(unittest.TestCase):
 
     @unittest.skipIf(ci_os != 'windows', 'HostArchPlatform test only applies to windows')
     def test_HostArchPlatform(self):
-        if ci_service == 'travis':
-            platforms = ['x64']
-        else:
+        if ci_service == 'appveyor':
             platforms = ['x86', 'x64']
+        else:
+            platforms = ['x64']
         for platform in platforms:
             for cc in ['vs2019', 'gcc']:
                 cue.ci['platform'] = platform
@@ -750,18 +766,17 @@ class TestSetupForBuild(unittest.TestCase):
                     self.assertTrue(re.search('-mingw$', os.environ['EPICS_HOST_ARCH']),
                                     'EPICS_HOST_ARCH (found {0}) is not -mingw for {1} / {2}'
                                     .format(os.environ['EPICS_HOST_ARCH'], cc, platform))
-                    pattern = {'x86': 'mingw32', 'x64': 'mingw64'}
-                    self.assertTrue(re.search(pattern[platform], os.environ['PATH']),
-                                    'Binary location for {0} not in PATH (found {1})'
-                                    .format(pattern[platform], os.environ['PATH']))
+                    if ci_service == 'appveyor':
+                        pattern = {'x86': 'mingw32', 'x64': 'mingw64'}
+                        self.assertTrue(re.search(pattern[platform], os.environ['PATH']),
+                                        'Binary location for {0} not in PATH (found PATH = {1})'
+                                        .format(pattern[platform], os.environ['PATH']))
 
     @unittest.skipIf(ci_os != 'windows', 'Strawberry perl test only applies to windows')
-    def test_StrawberryInPathVS2019(self):
-        if 'APPVEYOR' in os.environ:
-            os.environ['CMP'] = 'vs2019'
+    def test_StrawberryInPath(self):
         cue.setup_for_build(self.args)
         self.assertTrue(re.search('strawberry', os.environ['PATH'], flags=re.IGNORECASE),
-                        'Strawberry Perl installed but location not in PATH (found {0})'
+                        'Strawberry Perl location not in PATH (found  PATH = {0})'
                         .format(os.environ['PATH']))
 
     def setBase314(self, yesno):
@@ -817,6 +832,44 @@ class TestSetupForBuild(unittest.TestCase):
                             'Extra make arg [{0}] not set (expected "bla {0}", found "{1}")'
                             .format(ind, cue.extra_makeargs[ind]))
 
+
+class TestHooks(unittest.TestCase):
+    location = os.path.join(cue.cachedir, 'hook_test')
+    bla_file = os.path.join(location, 'bla.txt')
+    new_file = os.path.join(location, 'dd', 'new.txt')
+
+    def setUp(self):
+        if os.path.exists(self.location):
+            shutil.rmtree(self.location, onerror=cue.remove_readonly)
+        try:
+            os.makedirs(self.location)
+        except:
+            pass
+        with open(self.bla_file, 'w') as f:
+            f.write('''LINE1=YES
+LINE2=NO''')
+
+    def test_patchfile(self):
+        hook = os.path.join(builddir, 'test.patch')
+        cue.apply_patch(hook, cwd=self.location)
+        line1_yes = False
+        with open(self.bla_file) as f:
+            if 'LINE1=YES' in f.read():
+                line1_yes = True
+        self.assertFalse(line1_yes, "Patch didn't change line in test file 'bla.txt'")
+        self.assertTrue(os.path.exists(self.new_file), "patch didn't add new file")
+
+    def test_archiveZip(self):
+        hook = os.path.join(builddir, 'test.zip')
+        cue.extract_archive(hook, cwd=self.location)
+        self.assertTrue(os.path.exists(self.new_file), "archive extract didn't add new file")
+
+    def test_archive7z(self):
+        hook = os.path.join(builddir, 'test.7z')
+        cue.extract_archive(hook, cwd=self.location)
+        self.assertTrue(os.path.exists(self.new_file), "archive extract didn't add new file")
+
+
 if __name__ == "__main__":
     if 'VV' in os.environ and os.environ['VV'] == '1':
         logging.basicConfig(level=logging.DEBUG)
@@ -827,5 +880,14 @@ if __name__ == "__main__":
     if sys.argv[1:] == ['env']:
         # testing with_vcvars
         [print(K, '=', V) for K, V in os.environ.items()]
+    elif ci_os == 'windows' and sys.argv[1:] == ['findvs']:
+        from fnmatch import fnmatch
+        print('Available Visual Studio versions')
+        for base in (r'C:\Program Files (x86)', r'C:\Program Files'):
+            for root, dirs, files in os.walk(base):
+                for fname in files:
+                    if fnmatch(fname, 'vcvarsall.bat'):
+                        print('Found', os.path.join(root, fname))
+        sys.stdout.flush()
     else:
         unittest.main()

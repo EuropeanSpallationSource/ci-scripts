@@ -1,6 +1,7 @@
 <a target="_blank" href="http://semver.org">![Version][badge.version]</a>
 <a target="_blank" href="https://travis-ci.org/epics-base/ci-scripts">![Travis status][badge.travis]</a>
 <a target="_blank" href="https://ci.appveyor.com/project/epics-base/ci-scripts">![AppVeyor status][badge.appveyor]</a>
+<a target="_blank" href="https://github.com/epics-base/ci-scripts/actions">![GitHub Actions status][badge.gh-actions]</a>
 
 # Continuous Integration for EPICS Modules
 
@@ -58,12 +59,12 @@ levels as the example files.
 
 ### [Travis-CI](https://travis-ci.org/)
  - Five parallel runners on Linux/Windows (one runner on MacOS)
- - Use different compilers (gcc, clang)
- - Use different gcc versions
- - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
- - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
+ - Ubuntu 12/14/16/18, MacOS 10.13, Windows Server v1809
+ - Compile natively on Linux (different versions of gcc, clang)
  - Compile natively on MacOS (clang)
  - Compile natively on Windows (gcc/MinGW, Visual Studio 2017)
+ - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
+ - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
  - Built dependencies are cached (for faster builds).
  
 See specific
@@ -72,8 +73,8 @@ for more details.
 
 ### [AppVeyor](https://www.appveyor.com/)
  - One parallel runner (all builds are sequential)
- - Use different compilers (Visual Studio, gcc/MinGW)
- - Use different Visual Studio versions: \
+ - Windows Server 2012/2016/2019
+ - Compile using gcc/MinGW or different Visual Studio versions: \
    2008, 2010, 2012, 2013, 2015, 2017, 2019
  - Compile for Windows 32bit and 64bit
  - No useful caching available.
@@ -82,15 +83,30 @@ See specific
 **[ci-scripts on AppVeyor README](appveyor/README.md)**
 for more details.
 
+### [GitHub Actions](https://github.com/)
+ - 20 parallel runners on Linux/Windows (5 runners on MacOS)
+ - Ubuntu 16/18/20, MacOS 10.15, Windows Server 2016/2019
+ - Compile natively on Linux (gcc, clang)
+ - Compile natively on MacOS (clang)
+ - Compile natively on Windows (gcc/MinGW, Visual Studio 2017 & 2019)
+ - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
+ - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
+ - Caching not supported by ci-scripts yet.
+
+See specific
+**[ci-scripts on GitHub Actions README](github-actions/README.md)**
+for more details.
+
 ## How to Use the CI-Scripts
 
- 1. Get an account on a supported CI service provider platform.
+ 1. Get an account on a supported CI service provider platform
     (e.g. [Travis-CI](https://travis-ci.org/),
-    [AppVeyor](https://www.appveyor.com/), ...)
+    [AppVeyor](https://www.appveyor.com/), ...).
+    GitHub Actions does not require a separate account.
 
     (More details in the specific README of the subdirectory.)
 
- 2. In your Support Module, add this ci-scripts repository
+ 2. In your module, add this ci-scripts repository
     as a Git Submodule (name suggestion: `.ci`).
     ```bash
     git submodule add https://github.com/epics-base/ci-scripts .ci
@@ -225,10 +241,11 @@ recursing into submodules. [default is including submodules: `YES`]
 be always be extended by the release or branch name as `<name>-<version>`.
 [default is the slug in lower case: `foo`]
 
-`FOO_HOOK=<script>` Set the name of a script that will be run after cloning
-the module, before compiling it. Working directory when running the script
-is the root of the targeted module (e.g. `.../.cache/foo-1.2`).
-[default: no hooks are run]
+`FOO_HOOK=<hook>` Set the name of a `.patch` file, a `.zip` or `.7z` archive
+or a script that will be applied (using `-p1`), extracted or run after cloning
+the module, before compiling it.
+Working directory is the root of the targeted module,
+e.g., `.../.cache/foo-1.2`). [default: no hook]
 
 `FOO_VARNAME=<name>` Set the name that is used for the module when creating
 the `RELEASE.local` files. [default is the slug in upper case: `FOO`]
@@ -251,6 +268,10 @@ location for the dependency builds. [default is `$HOME/.cache`]
 Set `PARALLEL_MAKE` to the number of parallel make jobs that you want your
 build to use. [default is the number of CPUs on the runner]
 
+Set `CLEAN_DEPS` to `NO` if you want to leave the object file directories
+(`**/O.*`) in the cached dependencies. [default is to run `make clean`
+after building a dependency]
+
 Service specific options are described in the README files
 in the service specific subdirectories:
 
@@ -267,6 +288,8 @@ in the service specific subdirectories:
 
 EPICS Modules:
 [ASYN](https://github.com/epics-modules/asyn),
+[autosave](https://github.com/epics-modules/autosave),
+[busy](https://github.com/epics-modules/busy),
 [devlib2](https://github.com/epics-modules/devlib2),
 [ecmc](https://github.com/epics-modules/ecmc),
 [gtest](https://github.com/epics-modules/gtest),
@@ -275,10 +298,14 @@ EPICS Modules:
 [MCoreUtils](https://github.com/epics-modules/MCoreUtils),
 [modbus](https://github.com/epics-modules/modbus),
 [motor](https://github.com/epics-modules/motor),
+[mrfioc2](https://github.com/epics-modules/mrfioc2),
 [OPCUA](https://github.com/ralphlange/opcua),
 [PCAS](https://github.com/epics-modules/pcas),
+[softGlueZync](https://github.com/epics-modules/softGlueZynq),
 [sscan](https://github.com/epics-modules/sscan),
-[vac](https://github.com/epics-modules/vac)
+[std](https://github.com/epics-modules/std),
+[vac](https://github.com/epics-modules/vac),
+[xxx](https://github.com/epics-modules/xxx)
 
 ESS: [EtherCAT MC Motor Driver][ref.ethercatmc]
 
@@ -338,16 +365,16 @@ This will make all builds (not just for your module) verbose.
 
 Update the submodule in `.ci` first, then change your CI configuration
 (if needed) and commit both to your module. E.g., to update your Travis
-setup to release 3.0.1 of ci-scripts:
+setup to release 3.1.1 of ci-scripts:
 ```bash
 cd .ci
-git pull origin v3.0.1
+git pull origin v3.1.1
 cd -
 git add .ci
   # if needed:
-  edit .travis.yml      # and/or .appveyor.yml
+  edit .travis.yml     # and/or AppVeyor/GitHub Actions configuration
   git add .travis.yml
-git commit -m "Update ci-scripts submodule to v3.0.1"
+git commit -m "Update ci-scripts submodule to v3.1.1"
 ```
 
 Check the example configuration files inside ci-scripts (and their
@@ -401,6 +428,7 @@ in file LICENSE that is included with this distribution.
 [badge.version]: https://badge.fury.io/gh/epics-base%2Fci-scripts.svg
 [badge.travis]: https://travis-ci.org/epics-base/ci-scripts.svg?branch=master
 [badge.appveyor]: https://ci.appveyor.com/api/projects/status/8b578alg974axvux?svg=true
+[badge.gh-actions]: https://github.com/epics-base/ci-scripts/workflows/ci-scripts%20build/test/badge.svg
 
 [reddit.bash]: https://www.reddit.com/r/bash/comments/393oqv/why_is_the_version_of_bash_included_in_os_x_so_old/
 
