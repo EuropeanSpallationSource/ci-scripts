@@ -57,6 +57,14 @@ levels as the example files.
 
 ## Supported CI Services
 
+The listed properties and instructions for the CI services apply to
+their free tiers for open source projects, hosted in the cloud on
+their infrastructure.
+
+The companies behind these services also offer "enterprise" installations
+on customer infrastructure, which will have different performance
+and limitations.
+
 ### [Travis-CI](https://travis-ci.org/)
  - Five parallel runners on Linux/Windows (one runner on MacOS)
  - Ubuntu 12/14/16/18, MacOS 10.13, Windows Server v1809
@@ -95,6 +103,20 @@ for more details.
 
 See specific
 **[ci-scripts on GitHub Actions README](github-actions/README.md)**
+for more details.
+
+### [GitLab CI/CD](https://gitlab.com/)
+
+ - Docker-based runners on Linux (one VM instance per job)
+ - Can use any Docker image from Dockerhub (the examples use
+  `ubuntu:bionic`)
+ - Compile natively using different compilers (gcc, clang)
+ - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
+ - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
+ - Built dependencies are cached (for faster builds).
+
+See specific
+**[ci-scripts on GitLab CI/CD README](gitlab/README.md)**
 for more details.
 
 ## How to Use the CI-Scripts
