@@ -13,6 +13,18 @@ import distutils.util
 
 logger = logging.getLogger(__name__)
 
+def prepare_env():
+    '''HACK
+    github actions yaml configuration doesn't allow
+    conditional (un)setting of environments, only values.
+    Currently this script treats unset and empty environment
+    variables differently.
+    While this is the case, we unset any empty environment variables.
+    '''
+    toclear = tuple(k for k,v in os.environ.items() if len(v.strip())==0)
+    for var in toclear:
+        print('{0}Clearing empty environment variable {1}{2}'.format(ANSI_CYAN, var, ANSI_RESET))
+        del os.environ[var]
 
 # Detect the service and set up context hash accordingly
 def detect_context():
@@ -113,7 +125,7 @@ def detect_context():
 
     ci['parallel_make'] = 2
     if 'PARALLEL_MAKE' in os.environ:
-        ci['parallel_make'] = os.environ['PARALLEL_MAKE']
+        ci['parallel_make'] = int(os.environ['PARALLEL_MAKE'])
 
     ci['clean_deps'] = True
     if 'CLEAN_DEPS' in os.environ and os.environ['CLEAN_DEPS'].lower() == 'no':
@@ -715,8 +727,9 @@ def setup_for_build(args):
 
     # Add EXTRA make arguments
     for tag in ['EXTRA', 'EXTRA1', 'EXTRA2', 'EXTRA3', 'EXTRA4', 'EXTRA5']:
-        if tag in os.environ:
-            extra_makeargs.append(os.environ[tag])
+        val = os.environ.get(tag, "")
+        if len(val)>0:
+            extra_makeargs.append(val)
 
 
 def fix_etc_hosts():
@@ -1093,7 +1106,7 @@ def getargs():
     p.add_argument('--no-vcvars', dest='vcvars', default=True, action='store_false',
                    help='Assume vcvarsall.bat has already been run')
     p.add_argument('--add-path', dest='paths', default=[], action='append',
-                   help='Append directory to %PATH%.  Expands {ENVVAR}')
+                   help='Append directory to $PATH or %%PATH%%.  Expands {ENVVAR}')
     subp = p.add_subparsers()
 
     cmd = subp.add_parser('prepare')
@@ -1123,6 +1136,7 @@ def main(raw):
         logging.basicConfig(level=logging.DEBUG)
         silent_dep_builds = False
 
+    prepare_env()
     detect_context()
 
     if args.vcvars and ci['compiler'].startswith('vs'):

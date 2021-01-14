@@ -2,6 +2,7 @@
 <a target="_blank" href="https://travis-ci.org/epics-base/ci-scripts">![Travis status][badge.travis]</a>
 <a target="_blank" href="https://ci.appveyor.com/project/epics-base/ci-scripts">![AppVeyor status][badge.appveyor]</a>
 <a target="_blank" href="https://github.com/epics-base/ci-scripts/actions">![GitHub Actions status][badge.gh-actions]</a>
+<a target="_blank" href="https://gitlab.com/epics-base/ci-scripts/-/pipelines">![GitLab CI/CD status][badge.gitlab]</a>
 
 # Continuous Integration for EPICS Modules
 
@@ -387,16 +388,16 @@ This will make all builds (not just for your module) verbose.
 
 Update the submodule in `.ci` first, then change your CI configuration
 (if needed) and commit both to your module. E.g., to update your Travis
-setup to release 3.1.1 of ci-scripts:
+setup to release 3.2.0 of ci-scripts:
 ```bash
 cd .ci
-git pull origin v3.1.1
+git pull origin v3.2.0
 cd -
 git add .ci
   # if needed:
-  edit .travis.yml     # and/or AppVeyor/GitHub Actions configuration
+  edit .travis.yml     # and/or other CI service configurations
   git add .travis.yml
-git commit -m "Update ci-scripts submodule to v3.1.1"
+git commit -m "Update ci-scripts submodule to v3.2.0"
 ```
 
 Check the example configuration files inside ci-scripts (and their
@@ -451,6 +452,7 @@ in file LICENSE that is included with this distribution.
 [badge.travis]: https://travis-ci.org/epics-base/ci-scripts.svg?branch=master
 [badge.appveyor]: https://ci.appveyor.com/api/projects/status/8b578alg974axvux?svg=true
 [badge.gh-actions]: https://github.com/epics-base/ci-scripts/workflows/ci-scripts%20build/test/badge.svg
+[badge.gitlab]: https://gitlab.com/epics-base/ci-scripts/badges/master/pipeline.svg
 
 [reddit.bash]: https://www.reddit.com/r/bash/comments/393oqv/why_is_the_version_of_bash_included_in_os_x_so_old/
 
