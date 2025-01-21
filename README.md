@@ -50,7 +50,7 @@ levels as the example files.
    the module can be patched or further configured.
 
  - Define shared (default) or static builds (for executables and libraries).
- 
+
  - Define optimized (default) or debug builds.
 
  - Run tests (using the EPICS build system, i.e., `make runtests`
@@ -67,15 +67,16 @@ on customer infrastructure, which will have different performance
 and limitations.
 
 ### [Travis-CI](https://travis-ci.org/)
- - Five parallel runners on Linux/Windows (one runner on MacOS)
- - Ubuntu 12/14/16/18, MacOS 10.13, Windows Server v1809
+ - Two parallel runners on Linux/Windows (two runners on MacOS)
+ - Ubuntu 14/16/18/20, MacOS 10.13/14/15, Windows Server v1809
  - Compile natively on Linux (different versions of gcc, clang)
  - Compile natively on MacOS (clang)
  - Compile natively on Windows (gcc/MinGW, Visual Studio 2017)
  - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
- - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
+ - Cross-compile for RTEMS 4.9 and 4.10 (pc386, Base >= 3.15)
+ - Cross-compile for RTEMS 5 (10 BSPs, Base >= 7.0.5.1)
  - Built dependencies are cached (for faster builds).
- 
+
 See specific
 **[ci-scripts on Travis-CI README](travis/README.md)**
 for more details.
@@ -84,7 +85,7 @@ for more details.
  - One parallel runner (all builds are sequential)
  - Windows Server 2012/2016/2019
  - Compile using gcc/MinGW or different Visual Studio versions: \
-   2008, 2010, 2012, 2013, 2015, 2017, 2019
+   2010, 2012, 2013, 2015, 2017, 2019, 2022
  - Compile for Windows 32bit and 64bit
  - No useful caching available.
 
@@ -94,12 +95,13 @@ for more details.
 
 ### [GitHub Actions](https://github.com/)
  - 20 parallel runners on Linux/Windows (5 runners on MacOS)
- - Ubuntu 16/18/20, MacOS 10.15, Windows Server 2016/2019
+ - Ubuntu 18/20/22, MacOS 11/12, Windows Server 2019/2022
  - Compile natively on Linux (gcc, clang)
  - Compile natively on MacOS (clang)
- - Compile natively on Windows (gcc/MinGW, Visual Studio 2017 & 2019)
+ - Compile natively on Windows (gcc/MinGW, Visual Studio 2019/2022)
  - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
- - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
+ - Cross-compile for RTEMS 4.9 and 4.10 (pc386, Base >= 3.15)
+ - Cross-compile for RTEMS 5 (10 BSPs, Base >= 7.0.5.1)
  - Caching not supported by ci-scripts yet.
 
 See specific
@@ -110,10 +112,11 @@ for more details.
 
  - Docker-based runners on Linux (one VM instance per job)
  - Can use any Docker image from Dockerhub (the examples use
-  `ubuntu:bionic`)
+    `ubuntu:bionic`)
  - Compile natively using different compilers (gcc, clang)
  - Cross-compile for Windows 32bit and 64bit using MinGW and WINE
- - Cross-compile for RTEMS 4.9 and 4.10 (Base >= 3.15)
+ - Cross-compile for RTEMS 4.9 and 4.10 (pc386, Base >= 3.15)
+ - Cross-compile for RTEMS 5 (10 BSPs, Base >= 7.0.5.1)
  - Built dependencies are cached (for faster builds).
 
 See specific
@@ -185,6 +188,19 @@ Collect the results of your tests and print a summary.
 
 `exec`\
 Execute the remainder of the line using the default command shell.
+
+## Extra arguments to `make`
+
+You can add additional arguments to the make runs that the `cue.py` script
+starts. Put your additional arguments into environment variables named
+`EXTRA`, `EXTRA1`, ... `EXTRA5`.
+
+The variables may contain multiple arguments, separated by whitespace.
+Use regular shell script quoting (single/double quotes, backslash escapes)
+if you need spaces inside an extra argument.
+
+The YAML syntax needed to set environment variables depends on the CI
+service and platform. (See the full example configuration file.)
 
 ## Setup Files
 
@@ -278,6 +294,58 @@ that usually it is sufficient to set `FOO=<version>`.
 You can find the list of supported (and tested) modules in `defaults.set`.
 Feel free to suggest more default settings using a Pull Request.
 
+## RTEMS
+
+Cross-compiling to RTEMS versions 4.9, 4.10 or 5 is supported
+on supported CI services. For configuration see below.
+Tests can also be run cross-platform, using `qemu`.
+
+The RTEMS 5 builds now include most of the BSPs with configuration in Base:
+
+- beatnik
+- gen68360
+- mcp750
+- mvme167
+- mvme2100
+- mvme3100
+- pc686 w/ libbsd
+- qoriq_e500 w/ libbsd
+- uC5282
+- xilinx_zynq_a9_qemu w/ libbsd
+
+Build configuration [can be found here][ref.rtems5build].
+Set `RSB_BUILD` to select the RTEMS toolchain release name/data from
+https://github.com/mdavidsaver/rsb/releases.
+
+RTEMS 5 builds need to be switched to ubuntu version >= 20
+(aka. **os: ubuntu-20.04** with GitHub Actions,
+**dist: focal** with Travis-CI or
+**image: ubuntu:focal** with GitLab CI/CD).
+
+## Cross Compilation
+
+Setting the `CI_CROSS_TARGETS` environment variable enables cross-compiling
+from Linux to the provided targets architectures.
+The value of the environment variable must  contain the EPICS architecture
+and - depending on the target - may contain additional information like
+the compiler prefix to be used or the version of the target OS.
+
+Multiple cross-targets can be added to the `CI_CROSS_TARGETS` variable
+by separating them with a colon (`:`) character.
+
+For example, possible values are:
+
+- linux-aarch64
+- linux-arm@arm-linux-gnueabi
+- linux-arm@arm-linux-gnueabihf
+- linux-ppc
+- linux-ppc64
+- win32-x86-mingw
+- windows-x64-mingw
+- RTEMS-pc386-qemu@4.9
+- RTEMS-pc386-qemu@4.10
+- RTEMS-pc686-qemu@5
+
 ## Debugging
 
 Setting `VV=1` in your service configuration (e.g., `.travis.yml`) for a
@@ -300,6 +368,8 @@ in the service specific subdirectories:
 
 - [Travis-CI README](travis/README.md)
 - [AppVeyor README](appveyor/README.md)
+- [GitHub Actions README](github-actions/README.md)
+- [GitLab README](gitlab/README.md)
 
 ## References: EPICS Modules Using ci-scripts
 
@@ -388,16 +458,16 @@ This will make all builds (not just for your module) verbose.
 
 Update the submodule in `.ci` first, then change your CI configuration
 (if needed) and commit both to your module. E.g., to update your Travis
-setup to release 3.2.0 of ci-scripts:
+setup to release 3.3.0 of ci-scripts:
 ```bash
 cd .ci
-git pull origin v3.2.0
+git pull origin v3.3.0
 cd -
 git add .ci
   # if needed:
   edit .travis.yml     # and/or other CI service configurations
   git add .travis.yml
-git commit -m "Update ci-scripts submodule to v3.2.0"
+git commit -m "Update ci-scripts submodule to v3.3.0"
 ```
 
 Check the example configuration files inside ci-scripts (and their
@@ -448,7 +518,7 @@ This module is distributed subject to a Software License Agreement found
 in file LICENSE that is included with this distribution.
 
 <!-- Links -->
-[badge.version]: https://badge.fury.io/gh/epics-base%2Fci-scripts.svg
+[badge.version]: https://img.shields.io/github/v/release/epics-base/ci-scripts?sort=semver
 [badge.travis]: https://travis-ci.org/epics-base/ci-scripts.svg?branch=master
 [badge.appveyor]: https://ci.appveyor.com/api/projects/status/8b578alg974axvux?svg=true
 [badge.gh-actions]: https://github.com/epics-base/ci-scripts/workflows/ci-scripts%20build/test/badge.svg
@@ -457,3 +527,4 @@ in file LICENSE that is included with this distribution.
 [reddit.bash]: https://www.reddit.com/r/bash/comments/393oqv/why_is_the_version_of_bash_included_in_os_x_so_old/
 
 [ref.ethercatmc]: https://github.com/EuropeanSpallationSource/m-epics-ethercatmc
+[ref.rtems5build]: https://github.com/mdavidsaver/rsb/blob/3911854462e74838e3e5f33a9e8f936fd0f1d95d/.github/workflows/build-5.yml#L98-L137

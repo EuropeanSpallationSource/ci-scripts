@@ -17,6 +17,7 @@ variables:
   SETUP_PATH: ".:.ci"
   BASE_RECURSIVE: "NO"
   APT: "libreadline6-dev libncurses5-dev perl clang g++-mingw-w64-i686 g++-mingw-w64-x86-64 qemu-system-x86 re2c"
+  DEBIAN_FRONTEND: "noninteractive"
   CMP: "gcc"
   BGFC: "default"
   VV: "1"
@@ -137,12 +138,14 @@ wine64_static_debug:
 # Cross-builds to RTEMS 4.9 and 4.10
 rtems4.9_default:
   extends: .build
+  image: ubuntu:focal
   variables:
     RTEMS: "4.9"
     BASE: "3.15"
 
 rtems4.9_debug:
   extends: .build
+  image: ubuntu:focal
   variables:
     RTEMS: "4.9"
     BASE: "3.15"
@@ -150,11 +153,28 @@ rtems4.9_debug:
 
 rtems4.10_default:
   extends: .build
+  image: ubuntu:focal
   variables:
     RTEMS: "4.10"
 
 rtems4.10_debug:
   extends: .build
+  image: ubuntu:focal
   variables:
     RTEMS: "4.10"
+    BCFG: "debug"
+
+rtems5_default:
+  extends: .build
+  image: ubuntu:focal
+  variables:
+    RTEMS: "5"
+    RTEMS_TARGET: "RTEMS-pc686-qemu"
+
+rtems5_debug:
+  extends: .build
+  image: ubuntu:focal
+  variables:
+    RTEMS: "5"
+    RTEMS_TARGET: "RTEMS-pc686-qemu"
     BCFG: "debug"

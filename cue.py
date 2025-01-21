@@ -1,17 +1,42 @@
 #!/usr/bin/env python
-"""CI build script for Linux/MacOS/Windows on Travis/AppVeyor/GitHub-Actions
+"""EPICS CI build script for Linux/MacOS/Windows on Travis/GitLab/AppVeyor/GitHub-Actions
 """
 
 from __future__ import print_function
 
-import sys, os, stat, shutil
+import sys, os, stat, shlex, shutil
 import fileinput
 import logging
 import re
+import time
+import threading
+from glob import glob
 import subprocess as sp
-import distutils.util
+import sysconfig
+import shutil
 
 logger = logging.getLogger(__name__)
+
+# Keep track of all files we write/append for later logging
+_realopen = open
+_modified_files = set()
+def open(fname, mode='r'):
+    F = _realopen(fname, mode)
+    if 'w' in mode or 'a' in mode:
+        _modified_files.add(os.path.normpath(os.path.abspath(fname)))
+    return F
+
+def log_modified():
+    for fname in _modified_files:
+        with Folded(os.path.basename(fname), 'Contents of '+fname):
+            with open(fname, 'r') as F:
+                sys.stdout.write(F.read())
+            sys.stdout.write(os.linesep)
+
+def whereis(cmd):
+    if hasattr(shutil, 'which'): # >= py3.3
+        loc = shutil.which(cmd)
+        print('{0}Found exec {1} at {2!r} {3}'.format(ANSI_CYAN, cmd, loc, ANSI_RESET))
 
 def prepare_env():
     '''HACK
@@ -111,7 +136,10 @@ def detect_context():
         ci['cachedir'] = os.environ['CACHEDIR']
 
     if 'CHOCO' in os.environ:
-        ci['choco'].extend(os.environ['CHOCO'].split())
+        if os.environ['CHOCO'] == 'NO':
+            ci['choco'] = []
+        else:
+            ci['choco'].extend(os.environ['CHOCO'].split())
 
     if 'APT' in os.environ:
         ci['apt'].extend(os.environ['APT'].split())
@@ -145,17 +173,20 @@ modules_to_compile = []
 setup = {}
 places = {}
 extra_makeargs = []
+make_timeout = 0.
 
 is_base314 = False
 is_make3 = False
 has_test_results = False
 silent_dep_builds = True
+skip_dep_builds = False
 do_recompile = False
 installed_7z = False
 
 
 def clear_lists():
     global is_base314, has_test_results, silent_dep_builds, is_make3
+    global _modified_files, do_recompile, building_base
     del seen_setups[:]
     del modules_to_compile[:]
     del extra_makeargs[:]
@@ -166,6 +197,8 @@ def clear_lists():
     has_test_results = False
     silent_dep_builds = True
     do_recompile = False
+    building_base = False
+    _modified_files = set()
     ci['service'] = '<none>'
     ci['os'] = '<unknown>'
     ci['platform'] = '<unknown>'
@@ -185,9 +218,8 @@ clear_lists()
 
 if 'BASE' in os.environ and os.environ['BASE'] == 'SELF':
     building_base = True
+    skip_dep_builds = True
     places['EPICS_BASE'] = curdir
-else:
-    building_base = False
 
 # Setup ANSI Colors
 ANSI_RED = "\033[31;1m"
@@ -230,6 +262,13 @@ def fold_end(tag, title):
               .format(ANSI_YELLOW, title, ANSI_RESET))
     sys.stdout.flush()
 
+class Folded(object):
+    def __init__(self, tag, title):
+        self.tag, self.title = tag, title
+    def __enter__(self):
+        fold_start(self.tag, self.title)
+    def __exit__(self,A,B,C):
+        fold_end(self.tag, self.title)
 
 homedir = curdir
 if 'HomeDrive' in os.environ:
@@ -237,11 +276,12 @@ if 'HomeDrive' in os.environ:
 elif 'HOME' in os.environ:
     homedir = os.getenv('HOME')
 toolsdir = os.path.join(homedir, '.tools')
-rtemsdir = r'/home/travis/.rtems'            # Preliminary, until the next generation of toolchain
 
 
 vcvars_table = {
     # https://en.wikipedia.org/wiki/Microsoft_Visual_Studio#History
+    'vs2022': [r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat',
+               r'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat'],
     'vs2019': [r'C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat',
                r'C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat'],
     'vs2017': [r'C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat',
@@ -283,7 +323,7 @@ def host_info():
     print('PYTHONPATH')
     for dname in sys.path:
         print(' ', dname)
-    print('platform =', distutils.util.get_platform())
+    print('platform =', sysconfig.get_platform())
 
     if ci['os'] == 'windows':
         print('{0}Available Visual Studio versions{1}'.format(ANSI_CYAN, ANSI_RESET))
@@ -409,6 +449,7 @@ def call_git(args, **kws):
 
 
 def call_make(args=None, **kws):
+    global make_timeout
     if args is None:
         args = []
     place = kws.get('cwd', os.getcwd())
@@ -428,7 +469,19 @@ def call_make(args=None, **kws):
         makeargs += extra_makeargs
     logger.debug("EXEC '%s' in %s", ' '.join(['make'] + makeargs + args), place)
     sys.stdout.flush()
-    exitcode = sp.call(['make'] + makeargs + args, **kws)
+    sys.stderr.flush()
+
+    child = sp.Popen(['make'] + makeargs + args, **kws)
+    if make_timeout:
+        def expire(child):
+            logger.error('Timeout')
+            child.terminate()
+        timer = threading.Timer(make_timeout, expire, args=(child,))
+        timer.start()
+
+    exitcode = child.wait()
+    if make_timeout:
+        timer.cancel()
     logger.debug('EXEC DONE')
     if exitcode != 0:
         sys.exit(exitcode)
@@ -568,15 +621,21 @@ def add_dependency(dep):
         if dep + '_HOOK' in setup:
             hook = setup[dep + '_HOOK']
             hook_file = os.path.join(curdir, hook)
+            hook_ext = os.path.splitext(hook_file)[1]
             if os.path.exists(hook_file):
-                if re.match(r'.+\.patch$', hook):
+                if hook_ext == '.patch':
                     apply_patch(hook_file, cwd=place)
-                elif re.match(r'.+\.(zip|7z)$', hook):
+                elif hook_ext in ('.zip', '.7z'):
                     extract_archive(hook_file, cwd=place)
+                elif hook_ext == '.py':
+                    print('Running py hook {0} in {1}'.format(hook, place))
+                    sp.check_call([sys.executable, hook_file], cwd=place)
                 else:
                     print('Running hook {0} in {1}'.format(hook, place))
                     sys.stdout.flush()
                     sp.check_call(hook_file, shell=True, cwd=place)
+            else:
+                print('Skipping invalid hook {0} in {1}'.format(hook, place))
 
         # write checked out commit hash to marker file
         head = get_git_hash(place)
@@ -637,8 +696,10 @@ def setup_for_build(args):
     if ci['os'] == 'windows':
         if os.path.exists(r'C:\Strawberry\perl\bin'):
             # Put strawberry perl in front of the PATH (so that Git Perl is further behind)
+            # Put Chocolatey\bin ahead to select correct make.exe
             logger.debug('Adding Strawberry Perl in front of the PATH')
-            os.environ['PATH'] = os.pathsep.join([r'C:\Strawberry\c\bin',
+            os.environ['PATH'] = os.pathsep.join([r'C:\ProgramData\Chocolatey\bin',
+                                                  r'C:\Strawberry\c\bin',
                                                   r'C:\Strawberry\perl\site\bin',
                                                   r'C:\Strawberry\perl\bin',
                                                   os.environ['PATH']])
@@ -649,15 +710,15 @@ def setup_for_build(args):
                 os.environ['INCLUDE'] = ''
             if ci['platform'] == 'x86':
                 os.environ['INCLUDE'] = os.pathsep.join(
-                    [r'C:\mingw-w64\i686-6.3.0-posix-dwarf-rt_v5-rev1\mingw32\include',
+                    [r'C:\msys64\mingw32\include',
                      os.environ['INCLUDE']])
-                os.environ['PATH'] = os.pathsep.join([r'C:\mingw-w64\i686-6.3.0-posix-dwarf-rt_v5-rev1\mingw32\bin',
+                os.environ['PATH'] = os.pathsep.join([r'C:\msys64\mingw32\bin',
                                                       os.environ['PATH']])
             elif ci['platform'] == 'x64':
                 os.environ['INCLUDE'] = os.pathsep.join(
-                    [r'C:\mingw-w64\x86_64-8.1.0-posix-seh-rt_v6-rev0\mingw64\include',
+                    [r'C:\msys64\mingw64\include',
                      os.environ['INCLUDE']])
-                os.environ['PATH'] = os.pathsep.join([r'C:\mingw-w64\x86_64-8.1.0-posix-seh-rt_v6-rev0\mingw64\bin',
+                os.environ['PATH'] = os.pathsep.join([r'C:\msys64\mingw64\bin',
                                                       os.environ['PATH']])
 
     # Find BASE location
@@ -706,30 +767,52 @@ def setup_for_build(args):
                     if re.match('^test-results:', line):
                         has_test_results = True
 
-    # Check make version
-    if re.match(r'^GNU Make 3', sp.check_output(['make', '-v']).decode('ascii')):
-        is_make3 = True
-    logger.debug('Check if make is a 3.x series: %s', is_make3)
-
-    # apparently %CD% is handled automagically
+    # apparently %CD% is handled automagically, so use getcwd() instead
     os.environ['TOP'] = os.getcwd()
+    os.environ['MAKE'] = 'make'
+    os.environ['EPICS_BASE'] = places['EPICS_BASE']
 
-    addpaths = []
-    for path in args.paths:
+    changed_vars = set()
+
+    for extra_env_var in args.extra_env_vars:
         try:
-            addpaths.append(path.format(**os.environ))
+            key_value = extra_env_var.split('=')
+            key = key_value[0]
+            value = key_value[1]
+            expanded_value = value.format(**os.environ)
+
+            # Update the environment right now so later variables have access
+            if key in os.environ:
+                old_value = [os.environ[key]]
+            else:
+                old_value = []
+
+            os.environ[key] = os.pathsep.join(old_value + [expanded_value])
+            changed_vars.add(key)
         except KeyError:
             print('Environment')
             [print('  ', K, '=', repr(V)) for K, V in os.environ.items()]
             raise
 
-    os.environ['PATH'] = os.pathsep.join([os.environ['PATH']] + addpaths)
+    for key in changed_vars:
+        print("{0}{2} = {3}{1}".format(ANSI_CYAN, ANSI_RESET, key, os.environ[key]))
+
+    # os.environ completely updated at this point
+
+    logger.debug('Final PATH')
+    for loc in os.environ['PATH'].split(os.pathsep):
+        logger.debug('  %r', loc)
+
+    # Check make version
+    if re.match(r'^GNU Make 3', sp.check_output(['make', '-v']).decode('ascii')):
+        is_make3 = True
+    logger.debug('Check if make is a 3.x series: %s', is_make3)
 
     # Add EXTRA make arguments
     for tag in ['EXTRA', 'EXTRA1', 'EXTRA2', 'EXTRA3', 'EXTRA4', 'EXTRA5']:
         val = os.environ.get(tag, "")
         if len(val)>0:
-            extra_makeargs.append(val)
+            extra_makeargs.extend(shlex.split(val))
 
 
 def fix_etc_hosts():
@@ -745,6 +828,266 @@ def fix_etc_hosts():
     sys.stdout.flush()
     sp.call(['sudo', 'sed', '-ie', '/^127\\.0\\.1\\.1/ s|localhost\\s*||g', '/etc/hosts'])
     logger.debug('EXEC DONE')
+
+
+def edit_make_file(mode, path, values):
+    """Edit an EPICS Make file.
+
+    mode should be either "a" or "w", as for the open function.
+
+    path should be a list, e.g. ["configure", "CONFIG_SITE"]
+
+    values should be a dictionary of values to edit. If the value starts with
+    a "+" the value will be appended.
+
+    Example usage:
+
+        edit_make_file("a", ["configure", "CONFIG_SITE"], {
+            "VARIABLE": "value",
+            "APPENDED_VARIABLE": "+value",
+        })
+    """
+    with open(os.path.join(places["EPICS_BASE"], *path), mode) as f:
+        for variable, value in values.items():
+            if value.startswith("+"):
+                op = "+="
+                value = value[1:]
+            else:
+                op = "="
+
+            f.write(variable + op + value + "\n")
+
+
+def handle_old_cross_variables():
+    if "CI_CROSS_TARGETS" not in os.environ:
+        os.environ["CI_CROSS_TARGETS"] = ""
+
+    if "RTEMS" in os.environ:
+        if 'RTEMS_TARGET' in os.environ:
+            rtems_target = os.environ['RTEMS_TARGET']
+        else:
+            if os.environ['RTEMS'] == '5':
+                rtems_target = 'RTEMS-pc686-qemu'
+            else:
+                rtems_target = 'RTEMS-pc386'
+                if os.path.exists(os.path.join(places['EPICS_BASE'], 'configure', 'os',
+                                         'CONFIG.Common.RTEMS-pc386-qemu')):
+                    # Base 3.15 doesn't have -qemu target architecture
+                    rtems_target = 'RTEMS-pc386-qemu'
+
+        new_cross_target = ":" + rtems_target + "@" + os.environ["RTEMS"]
+        os.environ["CI_CROSS_TARGETS"] += new_cross_target
+
+        print(
+            "{0}WARNING: deprecated RTEMS environment variable was specified." \
+            " Please add '{1}' to CI_CROSS_TARGETS instead.{2}".format(
+                ANSI_RED, new_cross_target, ANSI_RESET
+            )
+        )
+        logger.debug('Replaced deprecated RTEMS target with new entry in CI_CROSS_TARGETS: %s', new_cross_target)
+
+    if "WINE" in os.environ:
+        if os.environ['WINE'] == '32':
+            new_cross_target = ":win32-x86-mingw"
+        else:
+            new_cross_target = ":windows-x64-mingw"
+        os.environ["CI_CROSS_TARGETS"] += new_cross_target
+
+        print(
+            "{0}WARNING: deprecated WINE environment variable was specified." \
+            " Please add '{1}' to CI_CROSS_TARGETS instead.{2}".format(
+                ANSI_RED, new_cross_target, ANSI_RESET
+            )
+        )
+        logger.debug('Replaced deprecated WINE target with new entry in CI_CROSS_TARGETS: %s', new_cross_target)
+
+
+def prepare_cross_compilation(cross_target_info):
+    """Prepare the configuration for a single value of the CI_CROSS_TARGETS
+    variable.
+
+    See the README.md file for more information on this variable."""
+    cross_target_info = cross_target_info.split("@")
+    if len(cross_target_info) == 2:
+        target_param = cross_target_info[1]
+    else:
+        target_param = None
+
+    target = cross_target_info[0]
+
+    if target.startswith("RTEMS-"):
+        prepare_rtems_cross(target, target_param)
+    elif target.endswith("-mingw"):
+        prepare_wine_cross(target)
+    elif target.startswith("linux-"):
+        prepare_linux_cross(target, target_param)
+    else:
+        raise ValueError(
+            "Unknown CI_CROSS_TARGETS {0}. "
+            "Please see the ci-scripts README for available values.".format(target)
+        )
+
+
+def prepare_rtems_cross(epics_arch, version):
+    """Prepare the configuration for RTEMS cross-compilation for the given
+    RTEMS version.
+
+    If version is None, it defaults to version 5 for RTEMS-pc686-*, 4.10
+    otherwise."""
+    if version is None:
+        if epics_arch.startswith("RTEMS-pc686"):
+            version = "5"
+        else:
+            version = "4.10"
+
+    # eg. "RTEMS-pc386" or "RTEMS-pc386-qemu" -> "pc386"
+    rtems_bsp = re.match("^RTEMS-([^-]*)(?:-qemu)?$", epics_arch).group(1)
+
+    print("Cross compiler RTEMS{0} @ {1}".format(version, epics_arch))
+
+    if ci["os"] == "linux":
+        download_rtems(version, rtems_bsp)
+
+    edit_make_file(
+        "a",
+        ["configure", "os", "CONFIG_SITE.Common.RTEMS"],
+        {
+            "RTEMS_VERSION": version,
+            "RTEMS_BASE": "/opt/rtems/" + version,
+        },
+    )
+
+    edit_make_file(
+        "a",
+        ["configure", "CONFIG_SITE"],
+        {"CROSS_COMPILER_TARGET_ARCHS": epics_arch},
+    )
+
+    ci["apt"].extend(
+        ["re2c", "g++-mingw-w64-i686", "g++-mingw-w64-x86-64", "qemu-system-x86"]
+    )
+
+def download_rtems(version, rtems_bsp):
+    rsb_release = os.environ.get("RSB_BUILD", "20210306")
+    tar_name = "{0}-rtems{1}.tar.xz".format(rtems_bsp, version)
+    print("Downloading RTEMS {0} cross compiler: {1}".format(version, tar_name))
+    sys.stdout.flush()
+    sp.check_call(
+        [
+            "curl",
+            "-fsSL",
+            "--retry",
+            "3",
+            "-o",
+            tar_name,
+            "https://github.com/mdavidsaver/rsb/releases/download/{0}%2F{1}/{2}".format(
+                version, rsb_release, tar_name
+            ),
+        ],
+        cwd=toolsdir,
+    )
+    sudo_prefix = []
+    if ci["service"] == "github-actions":
+        sudo_prefix = ["sudo"]
+    sp.check_call(
+        sudo_prefix + ["tar", "-C", "/", "-xmJ", "-f", os.path.join(toolsdir, tar_name)]
+    )
+    os.remove(os.path.join(toolsdir, tar_name))
+    for rtems_cc in glob("/opt/rtems/*/bin/*-gcc"):
+        print("{0}{1} --version{2}".format(ANSI_CYAN, rtems_cc, ANSI_RESET))
+        sys.stdout.flush()
+        sp.check_call([rtems_cc, "--version"])
+
+
+def prepare_wine_cross(epics_arch):
+    """Prepare the configuration for Wine cross-compilation for the given mingw
+    architecture."""
+
+    if epics_arch == "win32-x86-mingw":
+        gnu_arch = "i686-w64-mingw32"
+        deb_arch = "mingw-w64-i686"
+        bits = "32"
+    elif epics_arch == "windows-x64-mingw":
+        gnu_arch = "x86_64-w64-mingw32"
+        deb_arch = "mingw-w64-x86-64"
+        bits = "64"
+    else:
+        raise ValueError(
+            "Unknown architecture '{0}' for WINE target. "
+            "Please see the ci-scripts README for available values.".format(epics_arch)
+        )
+
+    print("Cross compiler mingw{} / Wine".format(bits))
+
+    edit_make_file(
+        "a",
+        ["configure", "os", "CONFIG.linux-x86." + epics_arch],
+        {"CMPLR_PREFIX": gnu_arch + "-"},
+    )
+
+    edit_make_file(
+        "a",
+        ["configure", "CONFIG_SITE"],
+        {"CROSS_COMPILER_TARGET_ARCHS": "+" + epics_arch},
+    )
+
+    ci['apt'].extend(["re2c", "g++-" + deb_arch])
+
+
+def prepare_linux_cross(epics_arch, gnu_arch):
+    """Prepare the configuration for Linux cross-compilation for the given
+    architecture.
+
+    If gnu_arch is None, this function will try to guess it using the
+    epics_arch value.
+
+    linux-arm architecture defaults to arm-linux-gnueabi (soft floats)."""
+    # This list is kind of an intersection between the set of cross-compilers
+    # provided by Ubuntu[1] and the list of architectures found in
+    # `epics-base/configure/os`
+    #
+    # [1]: https://packages.ubuntu.com/source/focal/gcc-10-cross
+    if gnu_arch is None:
+        if epics_arch == "linux-x86":
+            gnu_arch = "i686-linux-gnu"
+        elif epics_arch == "linux-arm":
+            gnu_arch = "arm-linux-gnueabi"
+        elif epics_arch == "linux-aarch64":
+            gnu_arch = "aarch64-linux-gnu"
+        elif epics_arch == "linux-ppc":
+            gnu_arch = "powerpc-linux-gnu"
+        elif epics_arch == "linux-ppc64":
+            gnu_arch = "powerpc64le-linux-gnu"
+        else:
+            raise ValueError(
+                "Could not guess the GNU architecture for EPICS arch: {}. "
+                "Please use the '@' syntax of the 'CI_CROSS_TARGETS' variable".format(
+                    epics_arch
+                )
+            )
+
+    print(
+        "Setting up Linux cross-compiling arch {0} with GNU arch {1}".format(
+            epics_arch, gnu_arch
+        )
+    )
+
+    edit_make_file(
+        "w",
+        ["configure", "os", "CONFIG_SITE.linux-x86_64." + epics_arch],
+        {
+            "GNU_TARGET": gnu_arch,
+            "COMMANDLINE_LIBRARY": "EPICS",
+        },
+    )
+
+    edit_make_file(
+        "a",
+        ["configure", "CONFIG_SITE"],
+        {"CROSS_COMPILER_TARGET_ARCHS": "+" + epics_arch},
+    )
+
+    ci["apt"].extend(["re2c", "g++-" + gnu_arch])
 
 
 def prepare(args):
@@ -785,6 +1128,15 @@ def prepare(args):
         shutil.copy(os.path.join(ci['cachedir'], 'RELEASE.local'), targetdir)
 
     fold_end('check.out.dependencies', 'Checking/cloning dependencies')
+
+    cxx = None
+    if ci['compiler'].startswith('clang'):
+        cxx = re.sub(r'clang', r'clang++', ci['compiler'])
+    elif ci['compiler'].startswith('gcc'):
+        cxx = re.sub(r'gcc', r'g++', ci['compiler'])
+
+    if not os.path.isdir(toolsdir):
+        os.makedirs(toolsdir)
 
     if 'BASE' in modules_to_compile or building_base:
         fold_start('set.up.epics_build', 'Configuring EPICS build system')
@@ -835,77 +1187,41 @@ endif''')
 
         # Cross-compilations from Linux platform
         if ci['os'] == 'linux':
+            handle_old_cross_variables()
 
-            # Cross compilation to Windows/Wine (set WINE to architecture "32", "64")
-            # requires wine and g++-mingw-w64-i686 / g++-mingw-w64-x86-64
-            if 'WINE' in os.environ:
-                if os.environ['WINE'] == '32':
-                    print('Cross compiler mingw32 / Wine')
-                    with open(os.path.join(places['EPICS_BASE'], 'configure', 'os',
-                                                 'CONFIG.linux-x86.win32-x86-mingw'), 'a') as f:
-                        f.write('''
-CMPLR_PREFIX=i686-w64-mingw32-''')
-                    with open(os.path.join(places['EPICS_BASE'], 'configure', 'CONFIG_SITE'), 'a') as f:
-                        f.write('''
-CROSS_COMPILER_TARGET_ARCHS+=win32-x86-mingw''')
+            for cross_target_info in os.environ.get("CI_CROSS_TARGETS", "").split(":"):
+                if cross_target_info == "":
+                    continue
+                prepare_cross_compilation(cross_target_info)
 
-                if os.environ['WINE'] == '64':
-                    print('Cross compiler mingw64 / Wine')
-                    with open(os.path.join(places['EPICS_BASE'], 'configure', 'os',
-                                           'CONFIG.linux-x86.windows-x64-mingw'), 'a') as f:
-                        f.write('''
-CMPLR_PREFIX=x86_64-w64-mingw32-''')
-                    with open(os.path.join(places['EPICS_BASE'], 'configure', 'CONFIG_SITE'), 'a') as f:
-                        f.write('''
-CROSS_COMPILER_TARGET_ARCHS += windows-x64-mingw''')
+        print('Host compiler', ci['compiler'])
 
-            # Cross compilation on Linux to RTEMS  (set RTEMS to version "4.9", "4.10")
-            # requires qemu, bison, flex, texinfo, install-info
-            if 'RTEMS' in os.environ:
-                print('Cross compiler RTEMS{0} @ pc386',format(os.environ['RTEMS']))
-                with open(os.path.join(places['EPICS_BASE'], 'configure', 'os',
-                                       'CONFIG_SITE.Common.RTEMS'), 'a') as f:
-                    f.write('''
-RTEMS_VERSION={0}
-RTEMS_BASE={1}'''.format(os.environ['RTEMS'], rtemsdir))
-
-                # Base 3.15 doesn't have -qemu target architecture
-                qemu_suffix = ''
-                if os.path.exists(os.path.join(places['EPICS_BASE'], 'configure', 'os',
-                                               'CONFIG.Common.RTEMS-pc386-qemu')):
-                    qemu_suffix = '-qemu'
-                with open(os.path.join(places['EPICS_BASE'], 'configure', 'CONFIG_SITE'), 'a') as f:
-                    f.write('''
-CROSS_COMPILER_TARGET_ARCHS += RTEMS-pc386{0}'''.format(qemu_suffix))
-
-        host_ccmplr_name = re.sub(r'^([a-zA-Z][^-]*(-[a-zA-Z][^-]*)*)+(-[0-9.]|)$', r'\1', ci['compiler'])
-        host_cmplr_ver_suffix = re.sub(r'^([a-zA-Z][^-]*(-[a-zA-Z][^-]*)*)+(-[0-9.]|)$', r'\3', ci['compiler'])
-        host_cmpl_ver = host_cmplr_ver_suffix[1:]
-
-        if host_ccmplr_name == 'clang':
-            print('Host compiler clang')
-            host_cppcmplr_name = re.sub(r'clang', r'clang++', host_ccmplr_name)
+        if ci['compiler'].startswith('clang'):
             with open(os.path.join(places['EPICS_BASE'], 'configure', 'os',
                                    'CONFIG_SITE.Common.'+os.environ['EPICS_HOST_ARCH']), 'a') as f:
                 f.write('''
 GNU         = NO
 CMPLR_CLASS = clang
-CC          = {0}{2}
-CCC         = {1}{2}'''.format(host_ccmplr_name, host_cppcmplr_name, host_cmplr_ver_suffix))
+CC          = {0}
+CCC         = {1}'''.format(ci['compiler'], cxx))
 
             # hack
             with open(os.path.join(places['EPICS_BASE'], 'configure', 'CONFIG.gnuCommon'), 'a') as f:
                 f.write('''
 CMPLR_CLASS = clang''')
 
-        if host_ccmplr_name == 'gcc':
-            print('Host compiler gcc')
-            host_cppcmplr_name = re.sub(r'gcc', r'g++', host_ccmplr_name)
+        elif ci['compiler'].startswith('gcc'):
             with open(os.path.join(places['EPICS_BASE'], 'configure', 'os',
                                    'CONFIG_SITE.Common.' + os.environ['EPICS_HOST_ARCH']), 'a') as f:
                 f.write('''
-CC          = {0}{2}
-CCC         = {1}{2}'''.format(host_ccmplr_name, host_cppcmplr_name, host_cmplr_ver_suffix))
+CC          = {0}
+CCC         = {1}'''.format(ci['compiler'], cxx))
+
+        elif ci['compiler'].startswith('vs'):
+            pass # nothing special
+
+        else:
+            raise ValueError('Unknown compiler name {0}.  valid forms include: gcc, gcc-4.8, clang, vs2019'.format(ci['compiler']))
 
         # Add additional settings to CONFIG_SITE
         extra_config = ''
@@ -926,14 +1242,27 @@ PERL = C:/Strawberry/perl/bin/perl -CSD'''
             with open(os.path.join(places['EPICS_BASE'], 'configure', 'CONFIG_SITE'), 'a') as f:
                 f.write(extra_config)
 
-        fold_end('set.up.epics_build', 'Configuring EPICS build system')
+        # enable color in error and warning messages if the (cross) compiler supports it
+        with open(os.path.join(places['EPICS_BASE'], 'configure', 'CONFIG'), 'a') as f:
+            f.write('''
+ifdef T_A
+  COLOR_FLAG_$(T_A) := $(shell $(CPP) -fdiagnostics-color -E - </dev/null >/dev/null 2>/dev/null && echo -fdiagnostics-color)
+  USR_CPPFLAGS += $(COLOR_FLAG_$(T_A))
+endif''')
 
-    if not os.path.isdir(toolsdir):
-        os.makedirs(toolsdir)
+        fold_end('set.up.epics_build', 'Configuring EPICS build system')
 
     if ci['os'] == 'windows' and ci['choco']:
         fold_start('install.choco', 'Installing CHOCO packages')
-        sp.check_call(['choco', 'install'] + ci['choco'] + ['-y', '--limitoutput', '--no-progress'])
+        for i in range(0,3):
+            try:
+                sp.check_call(['choco', 'install'] + ci['choco'] + ['-y', '--limitoutput', '--no-progress'])
+            except Exception as e:
+                print(e)
+                print("Retrying choco install attempt {} after 30 seconds".format(i+1))
+                time.sleep(30)
+            else:
+                break
         fold_end('install.choco', 'Installing CHOCO packages')
 
     if ci['os'] == 'linux' and ci['apt']:
@@ -947,45 +1276,39 @@ PERL = C:/Strawberry/perl/bin/perl -CSD'''
         sp.check_call(['brew', 'install'] + ci['homebrew'])
         fold_end('install.homebrew', 'Installing Homebrew packages')
 
-    if ci['os'] == 'linux' and 'RTEMS' in os.environ:
-        tar_name = 'i386-rtems{0}-trusty-20171203-{0}.tar.bz2'.format(os.environ['RTEMS'])
-        print('Downloading RTEMS {0} cross compiler: {1}'
-              .format(os.environ['RTEMS'], tar_name))
-        sys.stdout.flush()
-        sp.check_call(['curl', '-fsSL', '--retry', '3', '-o', tar_name,
-                       'https://github.com/mdavidsaver/rsb/releases/download/20171203-{0}/{1}'
-                      .format(os.environ['RTEMS'], tar_name)],
-                      cwd=toolsdir)
-        sudo_prefix = []
-        if ci['service'] == 'github-actions':
-            sudo_prefix = ['sudo']
-        sp.check_call(sudo_prefix + ['tar', '-C', '/', '-xmj', '-f', os.path.join(toolsdir, tar_name)])
-        os.remove(os.path.join(toolsdir, tar_name))
-
     setup_for_build(args)
 
     print('{0}EPICS_HOST_ARCH = {1}{2}'.format(ANSI_CYAN, os.environ['EPICS_HOST_ARCH'], ANSI_RESET))
+    whereis('make')
     print('{0}$ make --version{1}'.format(ANSI_CYAN, ANSI_RESET))
     sys.stdout.flush()
     call_make(['--version'], parallel=0)
+    whereis('perl')
     print('{0}$ perl --version{1}'.format(ANSI_CYAN, ANSI_RESET))
     sys.stdout.flush()
     sp.check_call(['perl', '--version'])
 
     if re.match(r'^vs', ci['compiler']):
+        whereis('cl')
         print('{0}$ cl{1}'.format(ANSI_CYAN, ANSI_RESET))
         sys.stdout.flush()
         sp.check_call(['cl'])
     else:
         cc = ci['compiler']
+        whereis(cc)
         print('{0}$ {1} --version{2}'.format(ANSI_CYAN, cc, ANSI_RESET))
         sys.stdout.flush()
-        try:
-            sp.check_call([cc, '--version'])
-        except Exception as e:
-            print(str(e))
+        sp.check_call([cc, '--version'])
+        if cxx:
+            whereis(cxx)
+            print('{0}$ {1} --version{2}'.format(ANSI_CYAN, cxx, ANSI_RESET))
+            sys.stdout.flush()
+            sp.check_call([cxx, '--version'])
 
-    if not building_base:
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        log_modified()
+
+    if not skip_dep_builds:
         fold_start('build.dependencies', 'Build missing/outdated dependencies')
         for mod in modules_to_compile:
             place = places[setup[mod + "_VARNAME"]]
@@ -1010,7 +1333,6 @@ PERL = C:/Strawberry/perl/bin/perl -CSD'''
         print('{0}Contents of RELEASE.local{1}'.format(ANSI_CYAN, ANSI_RESET))
         with open(os.path.join(ci['cachedir'], 'RELEASE.local'), 'r') as f:
             print(f.read().strip())
-
 
 def build(args):
     setup_for_build(args)
@@ -1051,7 +1373,6 @@ def test_results(args):
 def doExec(args):
     'exec user command with vcvars'
     setup_for_build(args)
-    os.environ['MAKE'] = 'make'
     fold_start('exec.command', 'Execute command {}'.format(args.cmd))
     sp.check_call(' '.join(args.cmd), shell=True)
     fold_end('exec.command', 'Execute command {}'.format(args.cmd))
@@ -1101,12 +1422,32 @@ call "{vcvars}" {arch}
 
 
 def getargs():
-    from argparse import ArgumentParser, REMAINDER
+    from argparse import ArgumentParser, ArgumentError, REMAINDER
+    def timespec(s):
+        M = re.match(r'^\s*(\d+)\s*([A-Za-z]*)', s)
+        if not M:
+            raise ArgumentError('Expected timespec not {!r}'.format(s))
+        val = float(M.group(1))
+        try:
+            mult = {
+                '':1.0,
+                'S':1.0,
+                'M':60.0,
+                'H':60.0*60.0,
+            }[M.group(2).upper()]
+        except KeyError:
+            raise ArgumentError('Expect suffix S, M, or H.  not {!r}'.format(s))
+        return val*mult
+
     p = ArgumentParser()
     p.add_argument('--no-vcvars', dest='vcvars', default=True, action='store_false',
                    help='Assume vcvarsall.bat has already been run')
-    p.add_argument('--add-path', dest='paths', default=[], action='append',
-                   help='Append directory to $PATH or %%PATH%%.  Expands {ENVVAR}')
+    p.add_argument('--add-path', dest='extra_env_vars', type=lambda x: "PATH={}".format(x), default=[], action='append',
+                   help='Append directory to $PATH or %%PATH%%. Expands {ENVVAR}. Equivalent to: "--add-env PATH=<PATHS>"')
+    p.add_argument('--add-env', dest='extra_env_vars', default=[], action='append',
+                   help='Append directory to the specified $ENVVAR or %%ENVVAR%%. Expands {OTHER_ENVVAR}. Example: "--add-env \'LD_LIBRARY_PATH={EPICS_BASE}/lib/{EPICS_HOST_ARCH}\'"')
+    p.add_argument('-T', '--timeout', type=timespec, metavar='DLY',
+                   help='Terminate make after delay.  DLY interpreted as second, or may be qualified with "S", "M", or "H".  (default no timeout)')
     subp = p.add_subparsers()
 
     cmd = subp.add_parser('prepare')
@@ -1131,10 +1472,17 @@ def getargs():
 
 def main(raw):
     global silent_dep_builds
+    global make_timeout
     args = getargs().parse_args(raw)
     if 'VV' in os.environ and os.environ['VV'] == '1':
         logging.basicConfig(level=logging.DEBUG)
         silent_dep_builds = False
+    else:
+        logging.basicConfig(level=logging.CRITICAL)
+
+    make_timeout = args.timeout
+    if make_timeout:
+        logger.info('Will timeout after %.1f seconds', make_timeout)
 
     prepare_env()
     detect_context()

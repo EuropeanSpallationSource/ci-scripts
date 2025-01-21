@@ -41,9 +41,9 @@ skip_commits:
 
 install:
 # fetch submodules (like ci-scripts)
-  - cmd: git submodule update --init --recursive
+  - git submodule update --init --recursive
 # for the sequencer
-  - cinst re2c
+  - choco install re2c
 
 #---------------------------------#
 #   build matrix configuration    #
@@ -92,8 +92,8 @@ environment:
   BASE: 7.0
 
   matrix:
-  - CMP: vs2019
-    APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2019
+  - CMP: vs2022
+    APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
   - CMP: gcc
   - CMP: vs2019
     APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2019
@@ -109,7 +109,6 @@ environment:
   - CMP: vs2013
   - CMP: vs2012
   - CMP: vs2010
-  - CMP: vs2008
 
 # Platform: processor architecture
 platform:
@@ -124,8 +123,6 @@ matrix:
     CMP: vs2012
   - platform: x64
     CMP: vs2010
-  - platform: x64
-    CMP: vs2008
   # Exclude more jobs to reduce build time
   # E.g., skip 32-bit for newer compilers
   #- platform: x86

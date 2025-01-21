@@ -8,11 +8,11 @@
 from __future__ import print_function
 
 import sys, os, shutil, fileinput
-import distutils.util
 import re
 import subprocess as sp
 import unittest
 import logging
+import fnmatch
 from argparse import Namespace
 
 builddir = os.getcwd()
@@ -66,6 +66,8 @@ import cue
 # we're working with tags (detached heads) a lot: suppress advice
 cue.call_git(['config', '--global', 'advice.detachedHead', 'false'])
 
+# Don't build dependencies when running unit tests
+cue.skip_dep_builds = True
 
 class TestSourceSet(unittest.TestCase):
 
@@ -78,10 +80,10 @@ class TestSourceSet(unittest.TestCase):
 
     def test_EmptySetupDirsPath(self):
         del os.environ['SETUP_PATH']
-        self.assertRaisesRegexp(NameError, '\(SETUP_PATH\) is empty', cue.source_set, 'test01')
+        self.assertRaisesRegex(NameError, '\(SETUP_PATH\) is empty', cue.source_set, 'test01')
 
     def test_InvalidSetupName(self):
-        self.assertRaisesRegexp(NameError, 'does not exist in SETUP_PATH', cue.source_set, 'xxdoesnotexistxx')
+        self.assertRaisesRegex(NameError, 'does not exist in SETUP_PATH', cue.source_set, 'xxdoesnotexistxx')
 
     def test_ValidSetupName(self):
         capturedOutput = getStringIO()
@@ -111,14 +113,14 @@ class TestSourceSet(unittest.TestCase):
         self.assertEqual(cue.setup['FOO'], 'bar', 'Setting of single word does not work')
         self.assertEqual(cue.setup['FOO2'], 'bar bar2', 'Setting of multiple words does not work')
         self.assertEqual(cue.setup['FOO3'], 'bar bar2', 'Indented setting of multiple words does not work')
-        self.assertEqual(cue.setup['SNCSEQ'], 'R2-2-8', 'Setup test01 was not included')
+        self.assertEqual(cue.setup['SNCSEQ'], 'R2-2-9', 'Setup test01 was not included')
 
     def test_DoubleIncludeGetsIgnored(self):
         capturedOutput = getStringIO()
         sys.stdout = capturedOutput
         cue.source_set('test03')
         sys.stdout = sys.__stdout__
-        self.assertRegexpMatches(capturedOutput.getvalue(), 'Ignoring already included setup file')
+        self.assertRegex(capturedOutput.getvalue(), 'Ignoring already included setup file')
 
 
 class TestUpdateReleaseLocal(unittest.TestCase):
@@ -349,8 +351,10 @@ class TestVCVars(unittest.TestCase):
             os.environ['CONFIGURATION'] = 'default'
             if ci_service == 'github-actions' and os.environ['IMAGEOS'] == 'win16':
                 os.environ['CMP'] = 'vs2017'
-            else:
+            elif ci_service == 'github-actions' and os.environ['IMAGEOS'] == 'win19':
                 os.environ['CMP'] = 'vs2019'
+            else:
+                os.environ['CMP'] = 'vs2022'
         cue.detect_context()
         cue.with_vcvars('env')
 
@@ -525,7 +529,7 @@ class TestTravisDetectContext(unittest.TestCase):
         sys.stdout = capturedOutput
         cue.detect_context()
         sys.stdout = sys.__stdout__
-        self.assertRegexpMatches(capturedOutput.getvalue(), "Variable 'STATIC' not supported anymore")
+        self.assertRegex(capturedOutput.getvalue(), "Variable 'STATIC' not supported anymore")
 
     def test_MisspelledBcfgGetsWarning(self):
         os.environ['BCFG'] = 'static-dubug'
@@ -533,7 +537,7 @@ class TestTravisDetectContext(unittest.TestCase):
         sys.stdout = capturedOutput
         cue.detect_context()
         sys.stdout = sys.__stdout__
-        self.assertRegexpMatches(capturedOutput.getvalue(), "Unrecognized build configuration setting")
+        self.assertRegex(capturedOutput.getvalue(), "Unrecognized build configuration setting")
 
 
 @unittest.skipIf(ci_service != 'appveyor', 'Run appveyor tests only on appveyor')
@@ -686,7 +690,7 @@ class TestAppveyorDetectContext(unittest.TestCase):
         sys.stdout = capturedOutput
         cue.detect_context()
         sys.stdout = sys.__stdout__
-        self.assertRegexpMatches(capturedOutput.getvalue(), "Variable 'STATIC' not supported anymore")
+        self.assertRegex(capturedOutput.getvalue(), "Variable 'STATIC' not supported anymore")
 
     def test_MisspelledConfigurationGetsWarning(self):
         os.environ['CONFIGURATION'] = 'static-dubug'
@@ -694,12 +698,11 @@ class TestAppveyorDetectContext(unittest.TestCase):
         sys.stdout = capturedOutput
         cue.detect_context()
         sys.stdout = sys.__stdout__
-        self.assertRegexpMatches(capturedOutput.getvalue(), "Unrecognized build configuration setting")
+        self.assertRegex(capturedOutput.getvalue(), "Unrecognized build configuration setting")
 
 
 class TestSetupForBuild(unittest.TestCase):
-    args = Namespace(paths=[])
-    cue.building_base = True
+    args = Namespace(extra_env_vars=[])
     if ci_os == 'windows':
         choco_installs = ['make']
         if ci_service != 'appveyor':
@@ -707,6 +710,7 @@ class TestSetupForBuild(unittest.TestCase):
         sp.check_call(['choco', 'install', '-ry'] + choco_installs)
 
     def setUp(self):
+        cue.building_base = True
         if ci_service == 'appveyor':
             os.environ['CONFIGURATION'] = 'default'
         cue.detect_context()
@@ -717,7 +721,7 @@ class TestSetupForBuild(unittest.TestCase):
 
     def test_AddPathsOption(self):
         os.environ['FOOBAR'] = 'BAR'
-        args = Namespace(paths=['/my/{FOOBAR}/dir', '/my/foobar'])
+        args = Namespace(extra_env_vars=['PATH=/my/{FOOBAR}/dir', 'PATH=/my/foobar'])
         cue.setup_for_build(args)
         self.assertTrue(re.search('/my/BAR/dir', os.environ['PATH']), 'Expanded path not in PATH')
         self.assertTrue(re.search('/foobar', os.environ['PATH']), 'Plain path not in PATH')
@@ -836,7 +840,7 @@ class TestSetupForBuild(unittest.TestCase):
     def test_ExtraMakeArgs(self):
         os.environ['EXTRA'] = 'bla'
         for ind in range(1,5):
-            os.environ['EXTRA{0}'.format(ind)] = 'bla {0}'.format(ind)
+            os.environ['EXTRA{0}'.format(ind)] = '"bla {0}"'.format(ind)
         cue.setup_for_build(self.args)
         self.assertTrue(cue.extra_makeargs[0] == 'bla', 'Extra make arg [0] not set')
         for ind in range(1,5):
@@ -880,6 +884,77 @@ LINE2=NO''')
         hook = os.path.join(builddir, 'test.7z')
         cue.extract_archive(hook, cwd=self.location)
         self.assertTrue(os.path.exists(self.new_file), "archive extract didn't add new file")
+
+@unittest.skipIf(ci_os != 'linux', 'CrossCompatibilityHandling tests only apply to linux')
+class TestCrossCompatibilityHandling(unittest.TestCase):
+    args = Namespace(extra_env_vars=[])
+
+    def setUp(self):
+        cue.clear_lists()
+        os.environ.pop('CI_CROSS_TARGETS', None)
+        os.environ.pop('RTEMS_TARGET', None)
+        os.environ.pop('RTEMS', None)
+        os.environ.pop('WINE', None)
+        os.environ['MODULES'] = ''
+        cue.detect_context()
+        # Make cue.prepare() reconfigure base
+        for root, dirs, files in os.walk(cue.ci['cachedir']):
+            if 'checked_out' in files:
+                if fnmatch.fnmatch(root, '*/base-*'):
+                    os.remove(os.path.join(root, 'checked_out'))
+
+    def runtest_rtems(self, arch, ver):
+        cue.prepare(self.args)
+        self.assertTrue('CI_CROSS_TARGETS' in os.environ, "CI_CROSS_TARGETS has not been set")
+        self.assertTrue(os.environ['CI_CROSS_TARGETS'].startswith(':' + arch),
+                        "CI_CROSS_TARGETS is {0} (expected: :{1}...)"
+                         .format(os.environ['CI_CROSS_TARGETS'], arch))
+        self.assertTrue(os.environ['CI_CROSS_TARGETS'].endswith('@' + ver),
+                        "CI_CROSS_TARGETS is {0} (expected: ...@{1})"
+                         .format(os.environ['CI_CROSS_TARGETS'], ver))
+
+    def test_RTEMS49_no_target(self):
+        os.environ['RTEMS'] = '4.9'
+        self.runtest_rtems('RTEMS-pc386', '4.9')
+
+    def test_RTEMS49_with_target(self):
+        os.environ['RTEMS'] = '4.9'
+        os.environ['RTEMS_TARGET'] = 'RTEMS-pc386'
+        self.runtest_rtems('RTEMS-pc386', '4.9')
+
+    def test_RTEMS410_no_target(self):
+        os.environ['RTEMS'] = '4.10'
+        self.runtest_rtems('RTEMS-pc386', '4.10')
+
+    def test_RTEMS410_with_target(self):
+        os.environ['RTEMS'] = '4.10'
+        os.environ['RTEMS_TARGET'] = 'RTEMS-pc386'
+        self.runtest_rtems('RTEMS-pc386', '4.10')
+
+    def test_RTEMS5_no_target(self):
+        os.environ['RTEMS'] = '5'
+        self.runtest_rtems('RTEMS-pc686', '5')
+
+    def test_RTEMS5_with_target(self):
+        os.environ['RTEMS'] = '5'
+        os.environ['RTEMS_TARGET'] = 'RTEMS-pc686'
+        self.runtest_rtems('RTEMS-pc686', '5')
+
+    def test_WINE32(self):
+        os.environ['WINE'] = '32'
+        cue.prepare(self.args)
+        self.assertTrue('CI_CROSS_TARGETS' in os.environ, "CI_CROSS_TARGETS has not been set")
+        self.assertEqual(os.environ['CI_CROSS_TARGETS'], ':win32-x86-mingw',
+                        "CI_CROSS_TARGETS is {0} (expected: :win32-x86-mingw)"
+                         .format(os.environ['CI_CROSS_TARGETS']))
+
+    def test_WINE64(self):
+        os.environ['WINE'] = '64'
+        cue.prepare(self.args)
+        self.assertTrue('CI_CROSS_TARGETS' in os.environ, "CI_CROSS_TARGETS has not been set")
+        self.assertEqual(os.environ['CI_CROSS_TARGETS'], ':windows-x64-mingw',
+                        "CI_CROSS_TARGETS is {0} (expected: :windows-x64-mingw)"
+                         .format(os.environ['CI_CROSS_TARGETS']))
 
 
 if __name__ == "__main__":

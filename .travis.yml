@@ -7,7 +7,7 @@
 
 language: cpp
 compiler: gcc
-dist: xenial
+dist: bionic
 
 cache:
   directories:
@@ -35,7 +35,6 @@ addons:
     packages:
     - re2c
     - p7zip
-    update: true
 
 install:
   - python cue.py prepare
@@ -84,6 +83,7 @@ jobs:
 
   - env: SET=test00
     os: osx
+    osx_image: xcode11.3
     install: python cue-test.py env
     script: python cue-test.py
 
@@ -95,10 +95,10 @@ jobs:
 # Compile example
 
   - env: SET=test01
-    dist: bionic
+    dist: focal
 
   - env: SET=test01 BCFG=static-debug
-    dist: bionic
+    dist: focal
 
   - env: SET=test01 CLEAN_DEPS=NO
     dist: trusty
@@ -122,6 +122,7 @@ jobs:
     compiler: clang
 
   - os: osx
+    osx_image: xcode11.3
     env:
       - SET=test01
       - EXTRA=CMD_CFLAGS="-mmacosx-version-min=10.7"
@@ -131,6 +132,7 @@ jobs:
 
   - env: SET=test01 BCFG=debug
     os: osx
+    osx_image: xcode11.3
     compiler: clang
 
   - env: SET=test01 WINE=32 TEST=NO
@@ -143,11 +145,16 @@ jobs:
   - env: SET=test01 WINE=64 TEST=NO BCFG=debug
   - env: SET=test01 WINE=64 TEST=NO BCFG=static-debug
 
-  - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO
-  - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO BCFG=debug
+  - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO APT=usrmerge
+  - env: SET=test01 RTEMS=4.9 BASE=3.15 TEST=NO BCFG=debug APT=usrmerge
 
-  - env: SET=test01 RTEMS=4.10
-  - env: SET=test01 RTEMS=4.10 BCFG=debug
+  - env: SET=test01 RTEMS=4.10 APT=usrmerge
+  - env: SET=test01 RTEMS=4.10 BCFG=debug APT=usrmerge
+
+  - env: SET=test01 RTEMS=5 RTEMS_TARGET=RTEMS-pc686-qemu
+    dist: focal
+  - env: SET=test01 RTEMS=5 RTEMS_TARGET=RTEMS-pc686-qemu BCFG=debug
+    dist: focal
 
   - env: SET=test01
     os: windows

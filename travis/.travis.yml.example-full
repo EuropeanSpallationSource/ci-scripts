@@ -5,7 +5,7 @@
 
 language: cpp
 compiler: gcc
-dist: xenial
+dist: bionic
 
 cache:
   directories:
@@ -39,7 +39,6 @@ addons:
     - re2c
     # for .zip/.7z archive hooks
     - p7zip
-    update: true
 
 install:
   - python .ci/cue.py prepare
@@ -104,9 +103,12 @@ jobs:
 
 # Cross-compilation to RTEMS
 
-  - env: BASE=7.0 RTEMS=4.10
+  - env: BASE=7.0 RTEMS=4.10 APT=usrmerge
 
-  - env: BASE=7.0 RTEMS=4.9
+  - env: BASE=7.0 RTEMS=4.9 APT=usrmerge
+
+  - env: BASE=7.0 RTEMS=5 RTEMS_TARGET=RTEMS-pc686-qemu
+    dist: focal
 
 # Other gcc versions (added as an extra package)
 
@@ -122,6 +124,7 @@ jobs:
 
   - env: BASE=7.0
     os: osx
+    osx_image: xcode11.3
     compiler: clang
 
 # Windows builds
